@@ -27,9 +27,14 @@ Gold 251건 중 220건은 3사 합의로 자동 확정된 것이다. 그 구간�
 
 from __future__ import annotations
 
+import argparse
+import csv
 import json
+import os
 
 from providers.base import PROVIDER_NAMES
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 # merge_results.py:37 과 같은 값. 등급은 순서가 있어 "틀린 방향"을 판정할 수 있다
 RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
@@ -194,3 +199,124 @@ def error_rows(gold: dict[str, dict], compare: dict[str, dict], cids: list[str],
                      "gold_source": g.get("source", ""), "why": g.get("why", ""),
                      **cells})
     return rows
+
+
+def _tag_from(compare_path: str) -> str:
+    """`compare_0830.jsonl` → `0830`. 채점 결과가 어느 병합본에서 나왔는지 이름에 남긴다"""
+    stem = os.path.basename(compare_path)
+    for cut in (".jsonl", ".json"):
+        stem = stem[: -len(cut)] if stem.endswith(cut) else stem
+    return stem[len("compare_"):] if stem.startswith("compare_") else stem or "latest"
+
+
+def _pct(hit: int, n: int) -> str:
+    return f"{hit}/{n} ({hit / n * 100:5.1f}%)" if n else f"{hit}/0 (  —  )"
+
+
+def _print_risk(title: str, note: str, scores: dict[str, dict], providers: list[str]) -> None:
+    print(f"\n── {title} " + "─" * max(0, 60 - len(title)))
+    if note:
+        print(f"   {note}")
+    for p in providers:
+        s = scores[p]
+        line = f"  {p:8s} 정확도 {_pct(s['hit'], s['n'])}"
+        if s["n"]:
+            line += f" · 미탐 {s['under']} · 과탐 {s['over']}"
+        if s["skipped"]:
+            line += f" · 채점제외 {s['skipped']}"
+        print(line)
+        if not s["n"]:
+            continue
+        order = [r for r in RISK_ORDER if any(k[0] == r for k in s["confusion"])]
+        if order:
+            print("             gold\\pred " + "".join(f"{r:>8s}" for r in RISK_ORDER))
+            for gr in order:
+                cells = "".join(f"{s['confusion'].get((gr, pr), 0):8d}" for pr in RISK_ORDER)
+                print(f"             {gr:9s}" + cells)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Gold 기준 3사 채점")
+    ap.add_argument("compare_jsonl", help="merge_results.py 가 만든 compare_{tag}.jsonl")
+    ap.add_argument("--gold", default=os.path.join(HERE, "gold", "gold_251.jsonl"))
+    ap.add_argument("--tag", default=None, help="기본은 compare 파일 이름에서 따온다")
+    ap.add_argument("--providers", nargs="+", default=list(PROVIDER_NAMES))
+    ap.add_argument("--raw", action="store_true",
+                    help="후처리 전(risk_raw) 기준. Gold 는 후처리 후 값으로 만들어졌으므로 "
+                         "기준이 어긋난다 — 검산을 끄고 경고만 낸다")
+    args = ap.parse_args()
+
+    gold = load_jsonl(args.gold)
+    compare = load_jsonl(args.compare_jsonl)
+    cids, gold_only = join(gold, compare)
+    if not cids:
+        raise SystemExit(f"조인된 case 가 없다 — {args.gold} 와 {args.compare_jsonl} 의 "
+                         "case_id 가 서로 다른 dataset 에서 나온 것 같다")
+    tag = args.tag or _tag_from(args.compare_jsonl)
+
+    risk_c = [c for c in cids if risk_bucket(gold[c].get("source", "")) == CONSENSUS]
+    risk_h = [c for c in cids if risk_bucket(gold[c].get("source", "")) == HUMAN]
+    type_c = [c for c in cids if type_bucket(gold[c].get("source", "")) == CONSENSUS]
+    type_h = [c for c in cids if type_bucket(gold[c].get("source", "")) == HUMAN]
+
+    print(f"gold {args.gold} — {len(gold)}건")
+    print(f"예측 {args.compare_jsonl} — 조인 {len(cids)}건"
+          + (f" (gold 에만 있는 case {len(gold_only)}건은 채점에서 제외)" if gold_only else ""))
+    print(f"기준: {'후처리 전(raw)' if args.raw else '후처리 후'} · 이름표 {tag}")
+    if args.raw:
+        print("  ! --raw 는 Gold(후처리 후)와 기준이 다르다 — 검산을 끄고 낸다")
+
+    s_all = score_risk(gold, compare, cids, args.providers, args.raw)
+    s_con = score_risk(gold, compare, risk_c, args.providers, args.raw)
+    s_hum = score_risk(gold, compare, risk_h, args.providers, args.raw)
+
+    bad = verify_consensus(s_con, args.raw)
+    if bad:
+        raise SystemExit(
+            "검산 실패 — 3사 합의 구간은 정의상 전원 100% 여야 한다.\n  "
+            + "\n  ".join(bad)
+            + "\n  조인이 어긋났거나, 이 compare 파일이 Gold 를 만든 것과 다르다.\n"
+              "  build_gold.py 에 넣었던 compare 파일과 같은 것을 주고 있는지 확인하라.")
+
+    print("\n" + "=" * 62)
+    print(f"등급 (risk) — 3사 합의 {len(risk_c)}건 · 사람 확정 {len(risk_h)}건")
+    print("=" * 62)
+    _print_risk(f"전체 {len(cids)}건", "순환 포함 — Gold 의 대부분이 3사 합의라 참고용이다",
+                s_all, args.providers)
+    _print_risk(f"3사 합의 {len(risk_c)}건", "정의상 전원 100% (검산 통과)",
+                s_con, args.providers)
+    _print_risk(f"사람 확정 {len(risk_h)}건", "★ 순환이 없는 유일한 구간 — 실제 변별력",
+                s_hum, args.providers)
+
+    t_con = score_type(gold, compare, type_c, args.providers, args.raw)
+    t_hum = score_type(gold, compare, type_h, args.providers, args.raw)
+    print("\n" + "=" * 62)
+    print(f"유형 (type) — 3사 합의 {len(type_c)}건 · 사람 확정 {len(type_h)}건")
+    print("  등급과 구간이 다르다 — auto_agree+human_type 행은 유형을 사람이 채웠다")
+    print("=" * 62)
+    for label, sc in (("3사 합의", t_con), ("사람 확정", t_hum)):
+        print(f"\n── {label} " + "─" * 50)
+        for p in args.providers:
+            s = sc[p]
+            print(f"  {p:8s} 정확도 {_pct(s['hit'], s['n'])}"
+                  + (f" · 채점제외 {s['skipped']}" if s["skipped"] else ""))
+            top = sorted(s["pairs"].items(), key=lambda kv: -kv[1])[:3]
+            for (gt, pt), c in top:
+                print(f"             {gt} → {pt}  {c}건")
+
+    rows = error_rows(gold, compare, cids, args.providers, args.raw)
+    out_dir = os.path.join(HERE, "results", "scored")
+    os.makedirs(out_dir, exist_ok=True)
+    cpath = os.path.join(out_dir, f"errors_{tag}.csv")
+    cols = (["case_id", "url", "gold_risk", "gold_type", "gold_source", "why"]
+            + [f"{p}_{k}" for p in args.providers for k in ("risk", "type", "direction")])
+    with open(cpath, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+    print(f"\n한 provider 라도 틀린 case {len(rows)}건 → {cpath}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
