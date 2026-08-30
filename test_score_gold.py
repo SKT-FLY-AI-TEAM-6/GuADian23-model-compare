@@ -128,6 +128,16 @@ def test_verify_consensus() -> tuple[int, int]:
     return fails, 4
 
 
+def test_consensus_gate() -> tuple[int, int]:
+    """실험 실행은 Gold 를 만든 판정이 아니라 100% 가 안 나오는 게 정상이다"""
+    bad = ["claude: 3사 합의 구간 200/222 — 100% 여야 한다"]
+    fails = _check("어긋남 없으면 통과", G.consensus_gate([], experiment=False), None)
+    fails += _check("실험이어도 어긋남 없으면 통과", G.consensus_gate([], experiment=True), None)
+    fails += _check("기본은 치명", G.consensus_gate(bad, experiment=False)[0], "fatal")
+    fails += _check("실험이면 경고", G.consensus_gate(bad, experiment=True)[0], "warn")
+    return fails, 4
+
+
 def test_error_rows() -> tuple[int, int]:
     """맞힌 case 는 빠지고, 남은 행에는 세 provider 판정이 나란히 들어간다"""
     gold = {
@@ -156,7 +166,7 @@ def main() -> int:
     for name, fn in [("구간 분류", test_buckets), ("조인", test_join),
                      ("방향 판정", test_direction), ("등급 채점", test_score_risk),
                      ("유형 채점", test_score_type), ("검산", test_verify_consensus),
-                     ("오답 행", test_error_rows)]:
+                     ("검산 처리", test_consensus_gate), ("오답 행", test_error_rows)]:
         f, n = fn()
         print(f"{name}: {n - f}/{n} 통과")
         total_f += f

@@ -169,6 +169,24 @@ def verify_consensus(risk_scores: dict[str, dict], raw: bool) -> list[str]:
     return bad
 
 
+def consensus_gate(bad: list[str], experiment: bool) -> tuple[str, str] | None:
+    """검산 어긋남을 치명(중단)으로 볼지 경고로 볼지. 어긋남이 없으면 None
+
+    기본은 치명이다 — 3사 합의 구간에서 100% 가 아니면 채점이 틀린 것이다.
+
+    `--experiment` 는 그 전제가 성립하지 않는 실행을 위한 것이다. 프롬프트를 바꿔
+    다시 돌린 결과를 지금 Gold 로 채점하면, 합의 구간에서 판정이 달라지는 것이 오히려
+    **실험의 목적**이다. 여기서 중단하면 실험 자체를 채점할 수 없다. 대신 경고를 남겨
+    "이 숫자는 Gold 를 만든 판정이 아니다"가 출력에 드러나게 한다
+    """
+    if not bad:
+        return None
+    if experiment:
+        return ("warn", "이 compare 는 Gold 를 만든 판정이 아니다 (--experiment) — "
+                        "합의 구간이 100% 가 아닌 것은 예상된 것이다")
+    return ("fatal", "검산 실패 — 3사 합의 구간은 정의상 전원 100% 여야 한다")
+
+
 def error_rows(gold: dict[str, dict], compare: dict[str, dict], cids: list[str],
                providers: list[str], raw: bool = False) -> list[dict]:
     """한 provider 라도 틀린 case 만. 숫자에서 바로 "어떤 case 에서 틀렸는데"로 넘어가려는 것
@@ -244,6 +262,9 @@ def main() -> int:
     ap.add_argument("--raw", action="store_true",
                     help="후처리 전(risk_raw) 기준. Gold 는 후처리 후 값으로 만들어졌으므로 "
                          "기준이 어긋난다 — 검산을 끄고 경고만 낸다")
+    ap.add_argument("--experiment", action="store_true",
+                    help="Gold 를 만든 판정이 아닌 실행(프롬프트 변경 등)을 채점한다. "
+                         "3사 합의 구간이 100% 가 아닌 것을 중단이 아니라 경고로 다룬다")
     args = ap.parse_args()
 
     gold = load_jsonl(args.gold)
@@ -270,13 +291,16 @@ def main() -> int:
     s_con = score_risk(gold, compare, risk_c, args.providers, args.raw)
     s_hum = score_risk(gold, compare, risk_h, args.providers, args.raw)
 
-    bad = verify_consensus(s_con, args.raw)
-    if bad:
+    gate = consensus_gate(verify_consensus(s_con, args.raw), args.experiment)
+    if gate and gate[0] == "fatal":
         raise SystemExit(
-            "검산 실패 — 3사 합의 구간은 정의상 전원 100% 여야 한다.\n  "
-            + "\n  ".join(bad)
+            gate[1] + ".\n  "
+            + "\n  ".join(verify_consensus(s_con, args.raw))
             + "\n  조인이 어긋났거나, 이 compare 파일이 Gold 를 만든 것과 다르다.\n"
-              "  build_gold.py 에 넣었던 compare 파일과 같은 것을 주고 있는지 확인하라.")
+              "  build_gold.py 에 넣었던 compare 파일과 같은 것을 주고 있는지 확인하라.\n"
+              "  프롬프트를 바꿔 다시 돌린 결과를 채점하는 것이라면 --experiment 를 줘라.")
+    if gate:
+        print(f"  ! {gate[1]}")
 
     print("\n" + "=" * 62)
     print(f"등급 (risk) — 3사 합의 {len(risk_c)}건 · 사람 확정 {len(risk_h)}건")
