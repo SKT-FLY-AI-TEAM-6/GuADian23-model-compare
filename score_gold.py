@@ -116,3 +116,29 @@ def score_risk(gold: dict[str, dict], compare: dict[str, dict], cids: list[str],
                 s[d] += 1
         out[p] = s
     return out
+
+
+def score_type(gold: dict[str, dict], compare: dict[str, dict], cids: list[str],
+               providers: list[str], raw: bool = False) -> dict[str, dict]:
+    """provider → 유형 채점 결과. 틀린 (정답, 예측) 쌍을 세어 어디서 갈리는지 본다
+
+    Gold 의 type 이 비어 있는 행은 채점하지 않는다 — 정답이 없는 것을 틀렸다고 할 수
+    없다. 지금 251건에는 빈 type 이 없지만, 확정 규칙이 바뀌면 다시 생길 수 있다
+    """
+    out: dict[str, dict] = {}
+    for p in providers:
+        s = {"n": 0, "hit": 0, "skipped": 0, "pairs": {}}
+        for cid in cids:
+            g = gold[cid].get("type") or ""
+            pred = _pred(compare[cid], p, raw)
+            if not g or pred is None or not pred["type"]:
+                s["skipped"] += 1
+                continue
+            s["n"] += 1
+            if pred["type"] == g:
+                s["hit"] += 1
+            else:
+                key = (g, pred["type"])
+                s["pairs"][key] = s["pairs"].get(key, 0) + 1
+        out[p] = s
+    return out

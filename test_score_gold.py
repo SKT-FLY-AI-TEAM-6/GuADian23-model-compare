@@ -95,10 +95,31 @@ def test_score_risk() -> tuple[int, int]:
     return fails, 6
 
 
+def test_score_type() -> tuple[int, int]:
+    """gold type 이 빈 행은 채점하지 않는다 — 정답이 없는 것을 틀렸다고 할 수 없다"""
+    gold = {
+        "c1": _gold("c1", "LOW", "none", "auto_agree"),
+        "c2": _gold("c2", "MEDIUM", "contentfarm", "human_review"),
+        "c3": _gold("c3", "MEDIUM", "", "auto_agree"),      # 유형 미확정
+    }
+    compare = {
+        "c1": _cmp("c1", claude=("LOW", "none")),
+        "c2": _cmp("c2", claude=("MEDIUM", "unverifiable")),
+        "c3": _cmp("c3", claude=("MEDIUM", "unverifiable")),
+    }
+    s = G.score_type(gold, compare, ["c1", "c2", "c3"], ["claude"])["claude"]
+    fails = _check("n", s["n"], 2)
+    fails += _check("hit", s["hit"], 1)
+    fails += _check("skipped", s["skipped"], 1)
+    fails += _check("pairs", s["pairs"], {("contentfarm", "unverifiable"): 1})
+    return fails, 4
+
+
 def main() -> int:
     total_f = total_n = 0
     for name, fn in [("구간 분류", test_buckets), ("조인", test_join),
-                     ("방향 판정", test_direction), ("등급 채점", test_score_risk)]:
+                     ("방향 판정", test_direction), ("등급 채점", test_score_risk),
+                     ("유형 채점", test_score_type)]:
         f, n = fn()
         print(f"{name}: {n - f}/{n} 통과")
         total_f += f
