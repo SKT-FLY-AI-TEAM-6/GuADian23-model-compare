@@ -109,12 +109,34 @@ def test_assembly_params() -> tuple[int, int]:
     return fails, 3
 
 
+def test_verify() -> tuple[int, int]:
+    """sha 가 어긋나거나 참조가 없으면 설명을 돌려준다 — 호출자가 중단할 근거"""
+    ref = {
+        "c1": {"sha": "aaa", "input_mode": "guardian-trim", "exclude": ("lookup_cache",)},
+        "c2": {"sha": "bbb", "input_mode": "guardian-trim", "exclude": ("lookup_cache",)},
+    }
+    # 전건 일치
+    fails = _check("통과", T.verify({"c1": ("t1", "aaa"), "c2": ("t2", "bbb")}, ref), [])
+
+    # sha 불일치
+    bad = T.verify({"c1": ("t1", "aaa"), "c2": ("t2", "XXX")}, ref)
+    fails += _check("불일치 1건", len(bad), 1)
+    fails += _check("case_id 가 들어간다", "c2" in bad[0], True)
+
+    # 참조에 없는 case — 3사가 판정한 적이 없다는 뜻이라 전제가 깨진다
+    missing = T.verify({"c1": ("t1", "aaa"), "c9": ("t9", "zzz")}, ref)
+    fails += _check("참조 없음도 어긋남", len(missing), 1)
+    fails += _check("case_id 가 들어간다", "c9" in missing[0], True)
+    return fails, 5
+
+
 def main() -> int:
     total_f = total_n = 0
     for name, fn in [("라벨 매핑", test_label_of),
                      ("참조 수집", test_collect_reference),
                      ("참조 충돌", test_collect_reference_conflict),
-                     ("조립 파라미터", test_assembly_params)]:
+                     ("조립 파라미터", test_assembly_params),
+                     ("sha 검증", test_verify)]:
         f, n = fn()
         print(f"{name}: {n - f}/{n} 통과")
         total_f += f

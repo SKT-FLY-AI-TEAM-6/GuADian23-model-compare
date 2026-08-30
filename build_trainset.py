@@ -25,8 +25,11 @@ LOW(0) 대 MEDIUM·HIGH(1) 로 묶으면 129 대 122 로 균형이 맞는다. �
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+
+import build_prompt as B
 
 # 등급 2클래스. HIGH 가 1건뿐이라 MEDIUM 과 묶는다 — 자세한 이유는 위 docstring
 RISK_TO_LABEL = {"LOW": 0, "MEDIUM": 1, "HIGH": 1}
@@ -96,3 +99,41 @@ def assembly_params(reference: dict[str, dict]) -> tuple[str, tuple[str, ...]]:
             + "\n  ".join(str(c) for c in sorted(combos, key=str))
             + "\n  같은 조립으로 돈 run 만 남기고 다시 실행하라.")
     return combos.pop()
+
+
+def assemble(cases: list[dict], spec: dict, input_mode: str,
+             exclude: tuple[str, ...]) -> dict[str, tuple[str, str]]:
+    """case_id → (조립된 user 프롬프트, 그 sha256)
+
+    `run_eval.py` 와 같은 함수를 같은 파라미터로 부른다. 조립이 실패하는 case 는
+    조용히 빠뜨리지 않고 중단한다 — 251건 중 몇 건이 사라지면 학습셋 건수가 어긋난다
+    """
+    out: dict[str, tuple[str, str]] = {}
+    for case in cases:
+        cid = case["case_id"]
+        try:
+            _system, user = B.build_messages(case, spec, input_mode=input_mode,
+                                             exclude=exclude)
+        except Exception as e:
+            raise SystemExit(f"{cid} 조립 실패: {type(e).__name__}: {e}")
+        out[cid] = (user, hashlib.sha256(user.encode("utf-8")).hexdigest())
+    return out
+
+
+def verify(assembled: dict[str, tuple[str, str]],
+           reference: dict[str, dict]) -> list[str]:
+    """조립 결과가 3사에게 보낸 것과 같은지 전건 대조. 어긋남 설명 목록을 돌려준다
+
+    참조에 없는 case 도 어긋남으로 센다. 그 case 는 3사가 판정한 적이 없다는 뜻이고,
+    그러면 "3사와 같은 입력"이라는 전제 자체가 깨진다 — 조용히 넘어가면 학습셋 일부만
+    검증되지 않은 조립으로 들어간다
+    """
+    bad = []
+    for cid in sorted(assembled):
+        _text, sha = assembled[cid]
+        entry = reference.get(cid)
+        if entry is None:
+            bad.append(f"{cid}: 참조 run 이 없다 (3사가 판정한 적이 없는 case)")
+        elif entry["sha"] != sha:
+            bad.append(f"{cid}: sha 불일치 — 기록 {entry['sha'][:16]}… vs 지금 {sha[:16]}…")
+    return bad
