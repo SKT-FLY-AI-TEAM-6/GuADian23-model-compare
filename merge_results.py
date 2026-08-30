@@ -1,12 +1,19 @@
 """case_id 기준 병합 · 비교
 
-    python merge_results.py                  # 최신 실행끼리
-    python merge_results.py --tag 0829       # 이름 붙여 저장
+    python merge_results.py                        # 최신 실행끼리
+    python merge_results.py --tag 0829             # 이름 붙여 저장
+    python merge_results.py --dir 'results/{provider}-pilot'   # 파일럿 실행끼리
 
 `results/{provider}/*.jsonl` 을 읽어 case_id로 조인한다. provider마다 실행 시점이 다르므로
 같은 provider의 파일이 여럿이면 **가장 최근 run**을 쓰고, 그 안에서 성공한 행을 우선한다.
 아직 안 돌린 provider는 빈 칸으로 두고 병합 — 세 사람이 각자 다른 시점에 끝내도
 그때까지 나온 것으로 비교된다.
+
+읽을 곳은 `--dir` 로 바꾼다. `run_eval.py --out-dir` 로 본 실행과 분리해 둔 결과
+(파일럿·재현 실험 등)를 그 묶음끼리만 비교할 때 쓴다. `{provider}` 자리는 provider 이름으로
+채워지므로 반드시 들어 있어야 한다 — 세 provider를 한 인자로 가리키기 위한 것이다.
+`--tag` 를 안 주면 그 디렉터리 이름에서 따온다 (`results/{provider}-pilot` → `compare_pilot.*`).
+기본 병합 결과를 파일럿 결과가 덮어쓰지 않도록.
 
 산출:
  - `results/merged/compare_{tag}.jsonl`  case 한 건 = 한 줄 (세 모델 나란히)
@@ -30,9 +37,27 @@ RESULTS = os.path.join(HERE, "results")
 RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
 
 
-def _latest_run(provider: str, run_id: str | None) -> dict[str, dict]:
+DEFAULT_DIR = "results/{provider}"
+
+
+def _provider_dir(template: str, provider: str) -> str:
+    """`--dir` 템플릿의 {provider} 를 채워 실제 경로로. 상대 경로는 저장소 기준"""
+    path = template.format(provider=provider)
+    return path if os.path.isabs(path) else os.path.join(HERE, path)
+
+
+def _tag_from(template: str) -> str:
+    """`--tag` 를 안 준 때 쓸 이름표. `results/{provider}-pilot` → `pilot`.
+    기본 경로로 낸 `compare_latest.*` 를 파일럿 결과가 조용히 덮어쓰지 않게 하려는 것"""
+    if template == DEFAULT_DIR:
+        return "latest"
+    stem = os.path.basename(template.rstrip("/\\")).replace("{provider}", "")
+    return stem.strip("-_ ") or "latest"
+
+
+def _latest_run(dir_template: str, provider: str, run_id: str | None) -> dict[str, dict]:
     """provider 하나의 결과를 case_id → row 로. 최신 run 우선, 성공 행 우선"""
-    d = os.path.join(RESULTS, provider)
+    d = _provider_dir(dir_template, provider)
     if not os.path.isdir(d):
         return {}
     files = sorted(fn for fn in os.listdir(d) if fn.endswith(".jsonl"))
@@ -73,19 +98,63 @@ def _cell(row: dict | None) -> dict:
     }
 
 
+def _load_reference(path: str | None) -> dict[str, dict]:
+    """`extract_references.py` 가 낸 파일을 case_id → reference 로
+
+    가이드라인 §3 대로 Fixed Dataset 에는 과거 판정이 들어 있지 않다. 그래서 대조용
+    reference 는 **판정이 끝난 뒤** 이렇게 옆에서 붙인다 — 모델 입력에 합치지 않는다.
+    파일이 없으면 조용히 빈 대조로 넘어가지 않고 중단한다. `--reference` 를 준 것은
+    "대조해서 보겠다"는 뜻이라, 경로를 틀렸을 때 0% 일치로 읽히면 안 된다
+    """
+    if not path:
+        return {}
+    p = path if os.path.isabs(path) else os.path.join(HERE, path)
+    if not os.path.isfile(p):
+        raise SystemExit(f"--reference 파일이 없다: {p}\n"
+                         "  python extract_references.py 로 먼저 만들어라")
+    out: dict[str, dict] = {}
+    with open(p, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            # reference 를 감싸 둔 형태(extract_references.py)와 평평한 형태 둘 다 받는다
+            out[r["case_id"]] = r.get("reference") or {
+                k: r[k] for k in ("risk", "type", "reason", "at") if k in r}
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="case_id 기준으로 provider별 결과 병합")
     ap.add_argument("--cases", default=os.path.join(HERE, "dataset", "cases.jsonl"))
-    ap.add_argument("--tag", default="latest")
+    ap.add_argument("--dir", dest="dir_template", default=DEFAULT_DIR,
+                    help="결과를 읽을 곳. {provider} 자리가 provider 이름으로 채워진다 "
+                         f"(기본: {DEFAULT_DIR} · 예: 'results/{{provider}}-pilot')")
+    ap.add_argument("--tag", default=None,
+                    help="산출 파일 이름표. 기본은 --dir 에서 따온다 (기본 경로면 latest)")
+    ap.add_argument("--reference", default=None,
+                    help="사후 대조용 과거 판정 파일 (예: references/historical_claude_251.jsonl). "
+                         "모델 입력이 아니라 병합 결과에만 붙는다 — 가이드라인 §3·§8")
     ap.add_argument("--run-id", default=None, help="특정 run_id만 (provider별 접두사 일치)")
     ap.add_argument("--raw", action="store_true", help="후처리 전(verdict_raw) 기준으로 비교")
     args = ap.parse_args()
 
+    if "{provider}" not in args.dir_template:
+        raise SystemExit("--dir 에 {provider} 자리가 있어야 한다 — 세 provider를 한 인자로 "
+                         f"가리키기 위한 것이다. 예: 'results/{{provider}}-pilot'")
+    tag = args.tag or _tag_from(args.dir_template)
+
     cases = S.load_cases(args.cases)
-    per = {p: _latest_run(p, args.run_id) for p in PROVIDER_NAMES}
+    reference = _load_reference(args.reference)
+    per = {p: _latest_run(args.dir_template, p, args.run_id) for p in PROVIDER_NAMES}
     have = [p for p in PROVIDER_NAMES if per[p]]
     if not have:
-        raise SystemExit(f"결과가 없다 — {RESULTS}/<provider>/*.jsonl 을 먼저 만들어라")
+        raise SystemExit("결과가 없다 — "
+                         f"{_provider_dir(args.dir_template, '<provider>')}/*.jsonl 을 먼저 만들어라")
+    print(f"읽는 곳: {args.dir_template}  ·  이름표: {tag}")
+    if args.reference:
+        print(f"사후 대조 reference: {args.reference} — {len(reference)}건 "
+              "(모델 입력에는 들어가지 않았다)")
     print(f"병합 대상: {', '.join(have)}"
           + (f"  (없음: {', '.join(p for p in PROVIDER_NAMES if not per[p])})" if len(have) < 3 else ""))
     key = "risk_raw" if args.raw else "risk"
@@ -101,7 +170,11 @@ def main() -> int:
         row = {
             "case_id": cid,
             "url": case.get("url"),
-            "reference": case.get("reference") or {},
+            # --reference 를 준 때는 그 파일이 정본. 안 준 때만 case 안의 값을 본다
+            # (blind dataset 이면 그 값은 비어 있고, 그대로 "대조 없음"이 된다)
+            "reference": reference.get(cid) or case.get("reference") or {},
+            "reference_source": (args.reference if reference.get(cid)
+                                 else ("cases" if case.get("reference") else None)),
             **cells,
             "agree_risk": len(set(risks)) == 1 and len(risks) == len(have),
             "agree_type": len(set(types)) == 1 and len(types) == len(have),
@@ -113,12 +186,12 @@ def main() -> int:
         merged.append(row)
 
     os.makedirs(os.path.join(RESULTS, "merged"), exist_ok=True)
-    jpath = os.path.join(RESULTS, "merged", f"compare_{args.tag}.jsonl")
+    jpath = os.path.join(RESULTS, "merged", f"compare_{tag}.jsonl")
     with open(jpath, "w", encoding="utf-8") as f:
         for row in merged:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    cpath = os.path.join(RESULTS, "merged", f"compare_{args.tag}.csv")
+    cpath = os.path.join(RESULTS, "merged", f"compare_{tag}.csv")
     cols = (["case_id", "url", "ref_risk", "ref_type"]
             + [f"{p}_{k}" for p in PROVIDER_NAMES for k in ("risk", "type", "latency_ms")]
             + ["agree_risk", "agree_type", "majority_risk", "risk_spread"])
@@ -159,7 +232,8 @@ def main() -> int:
 
     refs = [r for r in merged if r["reference"].get("risk")]
     if refs:
-        print("\nreference(기존 판정) 대비 등급 일치")
+        print(f"\nreference(기존 판정) 대비 등급 일치")
+        print(f"  과거 판정이 있는 {len(refs)}/{n}건 중, 그 provider가 실제로 판정한 case만 센다")
         for p in have:
             m = [r for r in refs if r[p].get("ok")]
             hit = sum(1 for r in m if r[p].get(key) == r["reference"]["risk"])

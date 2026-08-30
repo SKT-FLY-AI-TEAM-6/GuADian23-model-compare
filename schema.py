@@ -139,6 +139,7 @@ def validate_verdict(v: Any, output_schema: dict) -> dict:
 
 def make_result(*, case_id: str, run_id: str, provider: str, model: str, spec: dict,
                 input_mode: str, excluded: tuple[str, ...], temperature: float | None,
+                max_tokens: int | None = None,
                 prompt_sha256: str, verdict_raw: dict | None, verdict: dict | None,
                 postprocess: dict, latency_ms: int, usage: dict, attempts: int,
                 error: str | None) -> dict:
@@ -159,6 +160,9 @@ def make_result(*, case_id: str, run_id: str, provider: str, model: str, spec: d
         "input_mode": input_mode,
         "excluded_tools": list(excluded),
         "temperature": temperature,
+        # 어느 출력 한도로 쟀는지. 추론 모델은 이 값이 모자라면 추론에만 예산을 다 쓰고
+        # 본문을 못 낸다 — "한도 부족"과 "모델이 못 함"을 사후에 구분하려면 남아 있어야 한다
+        "max_tokens": max_tokens,
         "prompt_sha256": prompt_sha256,
         "ok": error is None and verdict is not None,
         "verdict_raw": verdict_raw,
