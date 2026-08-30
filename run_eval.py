@@ -277,6 +277,9 @@ def main() -> int:
                     help="과거 판정(lookup_cache)을 입력에 포함 — 서비스 재현 검증용. 기본은 제외")
     ap.add_argument("--temperature", type=float, default=None,
                     help="기본은 spec의 값(운영은 미지정). 재현성 실험에서만 0 같은 값을 준다")
+    ap.add_argument("--max-tokens", type=int, default=None,
+                    help="기본은 spec의 값(450 — 운영 Claude 기준). 추론 모델(gpt-5·gemini 3.x)은 "
+                         "추론에 그 예산을 다 써 본문이 안 나오므로 2000 정도가 필요하다")
     ap.add_argument("--out-dir", default=None, help="기본: results/{provider}")
     ap.add_argument("--limit", type=int, default=0, help="앞에서 N건만 (0=전부)")
     ap.add_argument("--resume", action="store_true", help="이전 실행에서 성공한 case는 건너뛴다")
@@ -295,6 +298,11 @@ def main() -> int:
     # spec의 temperature가 정본. --temperature 를 준 때만 덮어쓴다 —
     # 그 사실은 결과 행에 남아 나중에 "이건 운영과 다른 설정으로 잰 것"임을 알 수 있다
     temperature = args.temperature if args.temperature is not None else spec["params"]["temperature"]
+    # max_tokens 도 같은 규칙 — spec 이 정본, CLI 를 준 때만 덮어쓰고 그 사실을 결과 행에 남긴다.
+    # spec 의 450 은 운영 Claude(haiku-4-5)에서 뽑은 값인데, 추론 모델은 그 예산을 **추론에만**
+    # 다 쓴다(실측: gpt-5 450/450, gemini-3.1-pro 사고 428). 한도에 걸린 것과 모델이 답을 못
+    # 낸 것은 다른 실패라서, 어느 한도로 쟀는지가 결과에 남아 있어야 한다
+    max_tokens = args.max_tokens if args.max_tokens is not None else spec["params"]["max_tokens"]
     if args.resume:
         done = _done_case_ids(args.out_dir or os.path.join(HERE, "results", args.provider))
         before = len(cases)
@@ -319,7 +327,9 @@ def main() -> int:
     print(f"provider {args.provider} · model {model} · spec {spec['spec_id']} "
           f"({spec['system_sha256'][:12]}…)")
     print(f"입력 {args.input_mode} · 제외 {list(exclude) or '없음'} · temperature "
-          f"{temperature if temperature is not None else '미지정(운영과 동일)'}")
+          f"{temperature if temperature is not None else '미지정(운영과 동일)'}"
+          f" · max_tokens {max_tokens}"
+          + ("" if args.max_tokens is None else f" (spec {spec['params']['max_tokens']} 를 덮어씀)"))
     print(f"case {len(cases)}건 → {out_path}\n")
 
     counts = {"ok": 0, "fail": 0}
@@ -335,7 +345,8 @@ def main() -> int:
                 # 조립 자체가 안 되는 case도 결과 파일에 남긴다 — 조용히 빠지면 건수가 어긋난다
                 row = S.make_result(case_id=case["case_id"], run_id=run_id, provider=args.provider,
                                     model=model, spec=spec, input_mode=args.input_mode,
-                                    excluded=exclude, temperature=temperature, prompt_sha256="",
+                                    excluded=exclude, temperature=temperature, max_tokens=max_tokens,
+                                    prompt_sha256="",
                                     verdict_raw=None, verdict=None,
                                     postprocess={"fill_type_applied": None, "ground_downgraded": None},
                                     latency_ms=0, usage={}, attempts=0, error=f"조립 실패: {e}")
@@ -347,7 +358,7 @@ def main() -> int:
             prompt_sha = hashlib.sha256(user.encode("utf-8")).hexdigest()
             req = Request(system=system, user=user, schema=spec["output_schema"],
                           model=model,
-                          max_tokens=spec["params"]["max_tokens"],
+                          max_tokens=max_tokens,
                           temperature=temperature)
 
             verdict_raw = verdict = None
@@ -382,7 +393,8 @@ def main() -> int:
 
             row = S.make_result(case_id=case["case_id"], run_id=run_id, provider=args.provider,
                                 model=model, spec=spec, input_mode=args.input_mode,
-                                excluded=exclude, temperature=temperature, prompt_sha256=prompt_sha,
+                                excluded=exclude, temperature=temperature, max_tokens=max_tokens,
+                                prompt_sha256=prompt_sha,
                                 verdict_raw=verdict_raw, verdict=verdict,
                                 postprocess=post, latency_ms=latency, usage=usage,
                                 attempts=attempts, error=error)
