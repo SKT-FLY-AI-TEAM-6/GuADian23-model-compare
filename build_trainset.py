@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 
 import build_prompt as B
 
@@ -137,3 +138,30 @@ def verify(assembled: dict[str, tuple[str, str]],
         elif entry["sha"] != sha:
             bad.append(f"{cid}: sha 불일치 — 기록 {entry['sha'][:16]}… vs 지금 {sha[:16]}…")
     return bad
+
+
+def stratified_assign(items: list[tuple[str, str]], test_ratio: float,
+                      folds: int, seed: int) -> dict[str, tuple[str, int]]:
+    """(case_id, 계층키) 목록 → case_id → (split, fold)
+
+    계층은 `label|source` 다. source 를 계층에 넣는 이유는 auto_agree 와 human_review 가
+    성격이 다른 데이터이기 때문이다 — 한쪽에 몰리면 구간별 점수를 낼 수 없다.
+
+    **split 과 fold 는 서로 독립이다.** fold 는 split 과 무관하게 전건에 배정한다
+    (test 행도 fold 를 가진다). 둘은 다른 평가 방식이라 섞으면 안 된다 — "train 중에서
+    fold 나누기"를 하면 CV 가 전체를 덮지 못해 human_review 를 전부 평가한다는 목적이
+    깨진다
+    """
+    groups: dict[str, list[str]] = {}
+    for cid, key in items:
+        groups.setdefault(key, []).append(cid)
+
+    out: dict[str, tuple[str, int]] = {}
+    for key in sorted(groups):
+        ids = sorted(groups[key])            # 입력 순서에 의존하지 않게 먼저 정렬
+        random.Random(f"{seed}|{key}").shuffle(ids)
+        n_test = round(len(ids) * test_ratio)
+        for i, cid in enumerate(ids):
+            split = "test" if i < n_test else "train"
+            out[cid] = (split, i % folds)    # fold 는 계층 안에서 돌아가며 — 고르게 퍼진다
+    return out

@@ -130,13 +130,46 @@ def test_verify() -> tuple[int, int]:
     return fails, 5
 
 
+def test_stratified_assign() -> tuple[int, int]:
+    """split 과 fold 는 독립이다 — fold 는 test 행에도 배정된다"""
+    # 계층 두 개, 각 20건
+    items = [(f"a{i}", "0|auto_agree") for i in range(20)]
+    items += [(f"h{i}", "1|human_review") for i in range(20)]
+    got = T.stratified_assign(items, test_ratio=0.2, folds=5, seed=42)
+
+    fails = _check("전건 배정", len(got), 40)
+    # 계층별로 20% 가 test — 한쪽에 몰리면 안 된다
+    a_test = sum(1 for c, _ in items if c.startswith("a") and got[c][0] == "test")
+    h_test = sum(1 for c, _ in items if c.startswith("h") and got[c][0] == "test")
+    fails += _check("auto 계층 test 수", a_test, 4)
+    fails += _check("human 계층 test 수", h_test, 4)
+
+    # fold 는 split 과 무관하게 전건에 배정된다
+    folds = sorted({v[1] for v in got.values()})
+    fails += _check("fold 범위", folds, [0, 1, 2, 3, 4])
+    test_folds = {got[c][1] for c, _ in items if got[c][0] == "test"}
+    fails += _check("test 행도 fold 를 가진다", len(test_folds) > 0, True)
+    # fold 가 고르다 (계층 20건 / 5 = 4씩, 계층 둘이므로 8)
+    counts = sorted(sum(1 for v in got.values() if v[1] == k) for k in range(5))
+    fails += _check("fold 별 건수", counts, [8, 8, 8, 8, 8])
+
+    # seed 가 같으면 재현된다
+    again = T.stratified_assign(items, test_ratio=0.2, folds=5, seed=42)
+    fails += _check("재현", again, got)
+    # seed 가 다르면 달라진다 (아니면 셔플이 안 된 것)
+    other = T.stratified_assign(items, test_ratio=0.2, folds=5, seed=7)
+    fails += _check("seed 가 다르면 달라진다", other != got, True)
+    return fails, 8
+
+
 def main() -> int:
     total_f = total_n = 0
     for name, fn in [("라벨 매핑", test_label_of),
                      ("참조 수집", test_collect_reference),
                      ("참조 충돌", test_collect_reference_conflict),
                      ("조립 파라미터", test_assembly_params),
-                     ("sha 검증", test_verify)]:
+                     ("sha 검증", test_verify),
+                     ("계층 분할", test_stratified_assign)]:
         f, n = fn()
         print(f"{name}: {n - f}/{n} 통과")
         total_f += f
