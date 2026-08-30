@@ -162,3 +162,35 @@ def verify_consensus(risk_scores: dict[str, dict], raw: bool) -> list[str]:
         if s["n"] and s["hit"] != s["n"]:
             bad.append(f"{p}: 3사 합의 구간 {s['hit']}/{s['n']} — 100% 여야 한다")
     return bad
+
+
+def error_rows(gold: dict[str, dict], compare: dict[str, dict], cids: list[str],
+               providers: list[str], raw: bool = False) -> list[dict]:
+    """한 provider 라도 틀린 case 만. 숫자에서 바로 "어떤 case 에서 틀렸는데"로 넘어가려는 것
+
+    틀린 모델만 싣지 않고 **세 provider 를 다** 싣는다 — 나란히 놓고 봐야 왜 갈렸는지
+    보인다. `why` 는 사람이 라벨링 때 적은 근거로, human_review 행에만 있다
+    """
+    rows = []
+    for cid in cids:
+        g = gold[cid]
+        cells, wrong = {}, False
+        for p in providers:
+            pred = _pred(compare[cid], p, raw)
+            if pred is None:
+                cells[f"{p}_risk"] = cells[f"{p}_type"] = ""
+                cells[f"{p}_direction"] = "실패"
+                continue
+            d = direction(g["risk"], pred["risk"]) if pred["risk"] else None
+            cells[f"{p}_risk"] = pred["risk"] or ""
+            cells[f"{p}_type"] = pred["type"] or ""
+            cells[f"{p}_direction"] = d or ""
+            if d or (g.get("type") and pred["type"] and pred["type"] != g["type"]):
+                wrong = True
+        if not wrong:
+            continue
+        rows.append({"case_id": cid, "url": compare[cid].get("url") or g.get("url") or "",
+                     "gold_risk": g["risk"], "gold_type": g.get("type", ""),
+                     "gold_source": g.get("source", ""), "why": g.get("why", ""),
+                     **cells})
+    return rows

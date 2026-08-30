@@ -128,11 +128,35 @@ def test_verify_consensus() -> tuple[int, int]:
     return fails, 4
 
 
+def test_error_rows() -> tuple[int, int]:
+    """맞힌 case 는 빠지고, 남은 행에는 세 provider 판정이 나란히 들어간다"""
+    gold = {
+        "c1": _gold("c1", "LOW", "none", "auto_agree"),
+        "c2": _gold("c2", "HIGH", "impersonation", "human_review"),
+    }
+    gold["c2"]["why"] = "공식 도메인 사칭"
+    compare = {
+        "c1": _cmp("c1", claude=("LOW", "none"), gemini=("LOW", "none")),
+        "c2": _cmp("c2", claude=("HIGH", "impersonation"), gemini=("LOW", "none")),
+    }
+    rows = G.error_rows(gold, compare, ["c1", "c2"], ["claude", "gemini"])
+    fails = _check("맞힌 case 는 빠진다", [r["case_id"] for r in rows], ["c2"])
+    r = rows[0]
+    fails += _check("gold_source", r["gold_source"], "human_review")
+    fails += _check("why", r["why"], "공식 도메인 사칭")
+    # 틀린 모델뿐 아니라 셋 다 실어야 왜 갈렸는지 나란히 보인다
+    fails += _check("맞힌 provider 도 실린다", r["claude_risk"], "HIGH")
+    fails += _check("claude_direction", r["claude_direction"], "")
+    fails += _check("gemini_direction", r["gemini_direction"], "under")
+    return fails, 6
+
+
 def main() -> int:
     total_f = total_n = 0
     for name, fn in [("구간 분류", test_buckets), ("조인", test_join),
                      ("방향 판정", test_direction), ("등급 채점", test_score_risk),
-                     ("유형 채점", test_score_type), ("검산", test_verify_consensus)]:
+                     ("유형 채점", test_score_type), ("검산", test_verify_consensus),
+                     ("오답 행", test_error_rows)]:
         f, n = fn()
         print(f"{name}: {n - f}/{n} 통과")
         total_f += f
