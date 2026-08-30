@@ -142,3 +142,23 @@ def score_type(gold: dict[str, dict], compare: dict[str, dict], cids: list[str],
                 s["pairs"][key] = s["pairs"].get(key, 0) + 1
         out[p] = s
     return out
+
+
+def verify_consensus(risk_scores: dict[str, dict], raw: bool) -> list[str]:
+    """3사 합의 구간에서 전원 100% 인지 본다. 어긋난 provider 설명 목록을 돌려준다
+
+    이 구간의 정답은 세 모델이 합의한 값 그 자체다. 100% 가 아니라면 모델이 틀린 게
+    아니라 **채점이 틀린** 것이다 — 조인이 어긋났거나, compare 파일이 Gold 를 만든 것과
+    다르거나, 후처리 기준이 다르다. 어느 쪽이든 나머지 숫자를 믿을 수 없으므로
+    조용히 이상한 값을 내놓는 것보다 멈추는 쪽이 낫다.
+
+    `--raw` 를 준 때는 기준이 다른 것이 의도된 것이므로 검사하지 않는다. Gold 는
+    후처리 후 값으로 만들어졌기 때문에 raw 기준에서는 어긋나는 게 정상이다
+    """
+    if raw:
+        return []
+    bad = []
+    for p, s in risk_scores.items():
+        if s["n"] and s["hit"] != s["n"]:
+            bad.append(f"{p}: 3사 합의 구간 {s['hit']}/{s['n']} — 100% 여야 한다")
+    return bad

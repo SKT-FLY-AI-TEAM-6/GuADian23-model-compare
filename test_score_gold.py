@@ -115,11 +115,24 @@ def test_score_type() -> tuple[int, int]:
     return fails, 4
 
 
+def test_verify_consensus() -> tuple[int, int]:
+    """3사 합의 구간에서 100% 가 안 나오면 조인이나 기준이 어긋난 것이다 — 멈춘다"""
+    clean = {"claude": {"n": 10, "hit": 10}, "gemini": {"n": 10, "hit": 10}}
+    broken = {"claude": {"n": 10, "hit": 9}, "gemini": {"n": 10, "hit": 10}}
+    fails = _check("정상", G.verify_consensus(clean, raw=False), [])
+    got = G.verify_consensus(broken, raw=False)
+    fails += _check("어긋남 건수", len(got), 1)
+    fails += _check("어긋난 provider 이름이 들어간다", "claude" in got[0], True)
+    # --raw 는 기준이 다른 것이 의도된 것이라 중단시키지 않는다
+    fails += _check("raw 는 통과", G.verify_consensus(broken, raw=True), [])
+    return fails, 4
+
+
 def main() -> int:
     total_f = total_n = 0
     for name, fn in [("구간 분류", test_buckets), ("조인", test_join),
                      ("방향 판정", test_direction), ("등급 채점", test_score_risk),
-                     ("유형 채점", test_score_type)]:
+                     ("유형 채점", test_score_type), ("검산", test_verify_consensus)]:
         f, n = fn()
         print(f"{name}: {n - f}/{n} 통과")
         total_f += f
