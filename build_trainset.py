@@ -25,12 +25,17 @@ LOW(0) 대 MEDIUM·HIGH(1) 로 묶으면 129 대 122 로 균형이 맞는다. �
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
 import random
+from collections import Counter
 
 import build_prompt as B
+import schema as S
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 # 등급 2클래스. HIGH 가 1건뿐이라 MEDIUM 과 묶는다 — 자세한 이유는 위 docstring
 RISK_TO_LABEL = {"LOW": 0, "MEDIUM": 1, "HIGH": 1}
@@ -165,3 +170,94 @@ def stratified_assign(items: list[tuple[str, str]], test_ratio: float,
             split = "test" if i < n_test else "train"
             out[cid] = (split, i % folds)    # fold 는 계층 안에서 돌아가며 — 고르게 퍼진다
     return out
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Gold 라벨 + 조립 프롬프트 → 학습셋")
+    ap.add_argument("--tag", required=True, help="산출 파일 이름표 (trainset_{tag}.jsonl)")
+    ap.add_argument("--gold", default=os.path.join(HERE, "gold", "gold_251.jsonl"))
+    ap.add_argument("--cases", default=os.path.join(HERE, "dataset",
+                                                    "cases_251_20260829.jsonl"))
+    ap.add_argument("--spec", default=os.path.join(HERE, "dataset", "prompt_spec.json"))
+    ap.add_argument("--results", default=os.path.join(HERE, "results"),
+                    help="참조 sha 를 모을 곳")
+    ap.add_argument("--test-ratio", type=float, default=0.2)
+    ap.add_argument("--folds", type=int, default=5)
+    ap.add_argument("--seed", type=int, default=42)
+    args = ap.parse_args()
+
+    gold = {}
+    with open(args.gold, encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                r = json.loads(line)
+                gold[r["case_id"]] = r
+
+    reference, conflicts = collect_reference(args.results)
+    if conflicts:
+        raise SystemExit(
+            f"참조 run 의 prompt_sha256 이 서로 어긋난다 ({len(conflicts)}건).\n  "
+            + "\n  ".join(conflicts[:10])
+            + "\n  같은 조립으로 돈 run 만 남기고 다시 실행하라.")
+    input_mode, exclude = assembly_params(reference)
+    print(f"참조 run: {len(reference)}건 · 조립 {input_mode} · 제외 {list(exclude) or '없음'}")
+
+    cases = S.load_cases(args.cases, input_mode)
+    spec = B.load_spec(args.spec)
+    assembled = assemble(cases, spec, input_mode, exclude)
+
+    bad = verify(assembled, reference)
+    if bad:
+        raise SystemExit(
+            f"검증 실패 — 조립 결과가 3사에게 보낸 것과 다르다 ({len(bad)}건).\n  "
+            + "\n  ".join(bad[:10])
+            + "\n\n  원인 후보는 셋뿐이다:\n"
+              "   1. 조립 규칙이 바뀌었다        → build_prompt.py\n"
+              "   2. 판정 기준의 assembly 가 바뀌었다 → dataset/prompt_spec.json 의 assembly\n"
+              "   3. 다른 cases 파일을 주고 있다  → --cases 인자")
+    print(f"sha 검증 통과: {len(assembled)}건 전부 기록과 일치")
+
+    # gold 에 없는 case 는 라벨이 없으므로 학습셋에 넣을 수 없다
+    missing = [c for c in assembled if c not in gold]
+    if missing:
+        raise SystemExit(f"gold 에 라벨이 없는 case {len(missing)}건: {missing[:10]}")
+
+    items = [(cid, f"{label_of(gold[cid]['risk'])}|{gold[cid].get('source', '')}")
+             for cid in sorted(assembled)]
+    assign = stratified_assign(items, args.test_ratio, args.folds, args.seed)
+
+    rows = []
+    for cid in sorted(assembled):
+        text, sha = assembled[cid]
+        g = gold[cid]
+        split, fold = assign[cid]
+        rows.append({"case_id": cid, "text": text, "label": label_of(g["risk"]),
+                     "risk": g["risk"], "type": g.get("type", ""),
+                     "source": g.get("source", ""),
+                     "split": split, "fold": fold, "prompt_sha256": sha})
+
+    out_path = os.path.join(HERE, "dataset", f"trainset_{args.tag}.jsonl")
+    with open(out_path, "w", encoding="utf-8", newline="") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    print(f"\n학습셋 {len(rows)}건 → {out_path}")
+    print(f"라벨: {dict(Counter(r['label'] for r in rows))}  (0=LOW · 1=MEDIUM·HIGH)")
+    print("label × source")
+    cross = Counter((r["label"], r["source"]) for r in rows)
+    for (lab, src), n in sorted(cross.items()):
+        print(f"  label={lab}  {src:22s} {n:4d}")
+    print(f"split: {dict(Counter(r['split'] for r in rows))}")
+    print(f"fold : {dict(sorted(Counter(r['fold'] for r in rows).items()))}")
+
+    n_auto = sum(1 for r in rows if r["source"].startswith("auto_agree"))
+    print(f"\n  ! 이 학습셋의 라벨 {n_auto}/{len(rows)}건은 3사 합의로 만들어졌다.")
+    print("    이것으로 학습한 분류기는 상당 부분 3사를 모방하도록 배운다 — 지식 증류에")
+    print("    가깝지 사람이 정한 정답을 배우는 것이 아니다. 순환이 없는 신호는")
+    print(f"    human_review {sum(1 for r in rows if r['source'] == 'human_review')}건뿐이다.")
+    print("    평가할 때 source 로 갈라 구간별 점수를 따로 내라 (score_gold.py 와 같은 방식).")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
