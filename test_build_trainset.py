@@ -83,11 +83,38 @@ def test_collect_reference_conflict() -> tuple[int, int]:
     return fails, 2
 
 
+def test_assembly_params() -> tuple[int, int]:
+    """조립 파라미터는 참조에서 읽는다 — 하드코딩하면 조용히 다른 조립을 쓰게 된다"""
+    ref = {
+        "c1": {"sha": "aaa", "input_mode": "guardian-trim", "exclude": ("lookup_cache",)},
+        "c2": {"sha": "bbb", "input_mode": "guardian-trim", "exclude": ("lookup_cache",)},
+    }
+    fails = _check("도출", T.assembly_params(ref), ("guardian-trim", ("lookup_cache",)))
+
+    # 조합이 둘이면 어느 쪽으로 조립할지 정할 수 없다 → 중단
+    mixed = dict(ref)
+    mixed["c3"] = {"sha": "ccc", "input_mode": "raw", "exclude": ()}
+    try:
+        T.assembly_params(mixed)
+        fails += _check("조합이 둘이면 중단", "중단 안 함", "SystemExit")
+    except SystemExit:
+        pass
+
+    # 참조가 비면 검증 자체를 할 수 없다 → 중단
+    try:
+        T.assembly_params({})
+        fails += _check("참조가 비면 중단", "중단 안 함", "SystemExit")
+    except SystemExit:
+        pass
+    return fails, 3
+
+
 def main() -> int:
     total_f = total_n = 0
     for name, fn in [("라벨 매핑", test_label_of),
                      ("참조 수집", test_collect_reference),
-                     ("참조 충돌", test_collect_reference_conflict)]:
+                     ("참조 충돌", test_collect_reference_conflict),
+                     ("조립 파라미터", test_assembly_params)]:
         f, n = fn()
         print(f"{name}: {n - f}/{n} 통과")
         total_f += f

@@ -77,3 +77,22 @@ def collect_reference(results_dir: str) -> tuple[dict[str, dict], list[str]]:
                         conflicts.append(
                             f"{cid}: 참조가 서로 다르다 — {prev} vs {entry} ({sub}/{fn})")
     return ref, conflicts
+
+
+def assembly_params(reference: dict[str, dict]) -> tuple[str, tuple[str, ...]]:
+    """참조에서 (input_mode, exclude) 를 도출한다. 하나로 정해지지 않으면 중단
+
+    이 값을 스크립트에 박아 두지 않는 이유는, 박아 두면 실제 실행과 다른 조립을 써도
+    아무도 모르기 때문이다. 결과 행에 이미 기록돼 있으므로 그것이 정본이다
+    """
+    if not reference:
+        raise SystemExit(
+            "참조할 run 결과가 없다 — results/<provider>/*.jsonl 이 있어야 한다.\n"
+            "  학습셋 입력이 3사에게 보낸 것과 같은지 확인할 방법이 없으므로 만들지 않는다.")
+    combos = {(e["input_mode"], e["exclude"]) for e in reference.values()}
+    if len(combos) > 1:
+        raise SystemExit(
+            "참조 run 들의 조립 파라미터가 서로 다르다 — 어느 쪽으로 조립할지 정할 수 없다.\n  "
+            + "\n  ".join(str(c) for c in sorted(combos, key=str))
+            + "\n  같은 조립으로 돈 run 만 남기고 다시 실행하라.")
+    return combos.pop()
