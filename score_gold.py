@@ -68,3 +68,51 @@ def join(gold: dict[str, dict], compare: dict[str, dict]) -> tuple[list[str], li
     both = sorted(cid for cid in gold if cid in compare)
     gold_only = sorted(cid for cid in gold if cid not in compare)
     return both, gold_only
+
+
+def direction(gold_risk: str, pred_risk: str) -> str | None:
+    """틀린 방향. 맞으면 None
+
+    등급은 순서가 있어 단순 정답/오답보다 방향이 중요하다. Gold 가 HIGH 인데 LOW 로
+    본 것(미탐)과 Gold 가 LOW 인데 HIGH 로 본 것(과탐)은 서비스에서 의미가 다르다
+    """
+    if gold_risk == pred_risk:
+        return None
+    return "under" if RISK_ORDER[pred_risk] < RISK_ORDER[gold_risk] else "over"
+
+
+def _pred(compare_row: dict, provider: str, raw: bool) -> dict | None:
+    """provider 셀에서 예측을 꺼낸다. 실패했으면 None — 오답이 아니라 '채점 불가'다"""
+    cell = compare_row.get(provider) or {}
+    if not cell.get("ok"):
+        return None
+    return {"risk": cell.get("risk_raw" if raw else "risk"),
+            "type": cell.get("type_raw" if raw else "type")}
+
+
+def score_risk(gold: dict[str, dict], compare: dict[str, dict], cids: list[str],
+               providers: list[str], raw: bool = False) -> dict[str, dict]:
+    """provider → 등급 채점 결과
+
+    실패한 provider 는 skipped 로 따로 센다. 오답으로 세면 모델의 판단력과 API 실패가
+    한 숫자에 섞인다
+    """
+    out: dict[str, dict] = {}
+    for p in providers:
+        s = {"n": 0, "hit": 0, "under": 0, "over": 0, "skipped": 0, "confusion": {}}
+        for cid in cids:
+            pred = _pred(compare[cid], p, raw)
+            if pred is None or not pred["risk"]:
+                s["skipped"] += 1
+                continue
+            g = gold[cid]["risk"]
+            s["n"] += 1
+            key = (g, pred["risk"])
+            s["confusion"][key] = s["confusion"].get(key, 0) + 1
+            d = direction(g, pred["risk"])
+            if d is None:
+                s["hit"] += 1
+            else:
+                s[d] += 1
+        out[p] = s
+    return out

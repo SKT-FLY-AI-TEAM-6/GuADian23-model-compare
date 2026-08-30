@@ -46,9 +46,59 @@ def test_join() -> tuple[int, int]:
     return fails, 2
 
 
+def test_direction() -> tuple[int, int]:
+    """미탐과 과탐은 서비스에서 의미가 전혀 다르다 — 방향을 등급 순서로 판정한다"""
+    cases = [
+        ("LOW", "LOW", None),
+        ("HIGH", "LOW", "under"),      # 위험한데 안전하다고 봤다 — 미탐
+        ("MEDIUM", "LOW", "under"),
+        ("LOW", "HIGH", "over"),       # 안전한데 위험하다고 봤다 — 과탐
+        ("LOW", "MEDIUM", "over"),
+    ]
+    fails = 0
+    for g, p, want in cases:
+        fails += _check(f"direction({g},{p})", G.direction(g, p), want)
+    return fails, len(cases)
+
+
+def _gold(cid, risk, type_, source):
+    return {"case_id": cid, "risk": risk, "type": type_, "source": source}
+
+
+def _cmp(cid, **cells):
+    """compare 한 행. cells 는 provider 이름 → (risk, type) 또는 None(실패)"""
+    row = {"case_id": cid, "url": f"https://x/{cid}"}
+    for p, v in cells.items():
+        row[p] = {"ok": False} if v is None else {"ok": True, "risk": v[0], "type": v[1]}
+    return row
+
+
+def test_score_risk() -> tuple[int, int]:
+    """실패한 provider 는 오답이 아니라 skipped 로 센다"""
+    gold = {
+        "c1": _gold("c1", "LOW", "none", "auto_agree"),
+        "c2": _gold("c2", "HIGH", "impersonation", "human_review"),
+        "c3": _gold("c3", "MEDIUM", "unverifiable", "human_review"),
+    }
+    compare = {
+        "c1": _cmp("c1", claude=("LOW", "none")),
+        "c2": _cmp("c2", claude=("LOW", "none")),        # 미탐
+        "c3": _cmp("c3", claude=None),                   # API 실패
+    }
+    s = G.score_risk(gold, compare, ["c1", "c2", "c3"], ["claude"])["claude"]
+    fails = _check("n", s["n"], 2)                       # 실패 1건은 채점 대상에서 빠진다
+    fails += _check("hit", s["hit"], 1)
+    fails += _check("under", s["under"], 1)
+    fails += _check("over", s["over"], 0)
+    fails += _check("skipped", s["skipped"], 1)
+    fails += _check("confusion[HIGH,LOW]", s["confusion"].get(("HIGH", "LOW")), 1)
+    return fails, 6
+
+
 def main() -> int:
     total_f = total_n = 0
-    for name, fn in [("구간 분류", test_buckets), ("조인", test_join)]:
+    for name, fn in [("구간 분류", test_buckets), ("조인", test_join),
+                     ("방향 판정", test_direction), ("등급 채점", test_score_risk)]:
         f, n = fn()
         print(f"{name}: {n - f}/{n} 통과")
         total_f += f
