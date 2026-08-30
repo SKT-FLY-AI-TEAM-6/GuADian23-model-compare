@@ -36,7 +36,11 @@ class ClaudeProvider:
 
     def generate(self, req: Request) -> Response:
         tool = to_anthropic_tool(req.schema)
-        kw = {} if req.temperature is None else {"temperature": req.temperature}
+        # anthropic 1.0.0 은 messages.create() 시그니처에서 temperature 를 뺐다 (output_config 로 대체).
+        # API 자체는 haiku-4-5 에 대해 아직 받으므로 extra_body 로 실어 보낸다 — 이렇게 하지 않으면
+        # `run_eval.py --temperature 0` 이 전건 TypeError 로 죽는다. 운영은 temperature 를 지정하지
+        # 않으므로(None) 기본 경로에는 이 키가 아예 실리지 않는다
+        kw = {} if req.temperature is None else {"extra_body": {"temperature": req.temperature}}
         resp = self._client.messages.create(
             model=req.model,
             max_tokens=req.max_tokens,

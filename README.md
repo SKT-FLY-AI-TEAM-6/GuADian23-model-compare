@@ -14,6 +14,12 @@ dataset/prompt_spec.json  (GuADian 서버에서 1회 추출해 봉인한 판정 
         └─ python run_eval.py --provider openai  →  results/openai/{run_id}.jsonl
                                                           │
                         python merge_results.py  →  results/merged/compare_{tag}.jsonl + .csv
+                                                          │
+                        python extract_disagreements.py  →  dataset/to_label_{tag}.json
+                                                          │  (사람이 expect 를 채운다)
+                        python build_gold.py             →  gold/gold_251.jsonl
+                                                          │
+                        python score_gold.py             →  results/scored/errors_{tag}.csv
 ```
 
 ## 저장소 구분
@@ -25,6 +31,24 @@ dataset/prompt_spec.json  (GuADian 서버에서 1회 추출해 봉인한 판정 
 
 수집과 비교를 분리한 이유는, 비교 단계가 페이지를 다시 열지도 광고를 다시 누르지도 않기
 때문이다. 저장된 snapshot만 읽으므로 몇 번을 돌려도 같은 입력이고, 서버 코드와 무관하게 굴러간다.
+
+## 채점 — 누가 더 맞는가
+
+`merge_results.py` 의 일치율은 "셋이 서로 얼마나 같은가"이지 "누가 더 맞는가"가 아니다.
+셋이 함께 틀려도 일치율은 100% 다. Gold 가 확정된 뒤에야 정확도를 물을 수 있다.
+
+```bash
+python score_gold.py results/merged/compare_0830.jsonl
+python test_score_gold.py                          # 채점 로직 검증 (네트워크 없음)
+```
+
+Gold 251건 중 220건은 3사 합의로 자동 확정된 것이라, 그 구간을 정답으로 놓으면 세 모델
+모두 **정의상** 100% 가 나온다. 그래서 전체 / 3사 합의 / 사람 확정 세 구간으로 나누어
+찍는다 — **실제 변별력은 사람 확정 구간에서만 나온다**. 3사 합의 구간에서 100% 가 안
+나오면 채점이 틀린 것이므로 중단한다.
+
+등급은 순서가 있어(LOW < MEDIUM < HIGH) 정확도와 함께 미탐·과탐을 나누어 낸다.
+한 provider 라도 틀린 case 는 `results/scored/errors_{tag}.csv` 로 나간다 (커밋되지 않는다).
 
 ## 이 저장소는 단독으로 실행된다
 
