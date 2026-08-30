@@ -20,6 +20,8 @@ dataset/prompt_spec.json  (GuADian 서버에서 1회 추출해 봉인한 판정 
                         python build_gold.py             →  gold/gold_251.jsonl
                                                           │
                         python score_gold.py             →  results/scored/errors_{tag}.csv
+                                                          │
+                        python build_trainset.py --tag 0831  →  dataset/trainset_0831.jsonl
 ```
 
 ## 저장소 구분
@@ -49,6 +51,27 @@ Gold 251건 중 220건은 3사 합의로 자동 확정된 것이라, 그 구간�
 
 등급은 순서가 있어(LOW < MEDIUM < HIGH) 정확도와 함께 미탐·과탐을 나누어 낸다.
 한 provider 라도 틀린 case 는 `results/scored/errors_{tag}.csv` 로 나간다 (커밋되지 않는다).
+
+## 학습셋 — fine-tuned classifier 용
+
+```bash
+python build_trainset.py --tag 0831
+python test_build_trainset.py              # 추출 로직 검증 (네트워크 없음)
+```
+
+Gold 의 등급을 2클래스(LOW=0 · MEDIUM·HIGH=1)로 묶어 라벨로, `build_prompt.py` 가 조립한
+user 프롬프트를 입력으로 낸다. HIGH 가 1건뿐이라 3클래스로는 학습도 평가도 되지 않는다.
+원본 `risk` · `type` · `source` 를 각 행에 실어 두므로, 데이터가 늘면 **다시 조립하지 않고**
+라벨만 바꿔 재산출할 수 있다.
+
+**조립 결과는 3사에게 실제로 보낸 것과 전건 대조한다.** `results/*/*.jsonl` 에 기록된
+`prompt_sha256` 과 하나라도 다르면 중단한다 — 입력이 다르면 `score_gold.py` 의 같은 표에서
+비교해도 공정하지 않다. 조립 파라미터도 하드코딩하지 않고 참조 run 에서 읽는다.
+
+산출물은 커밋되지 않는다 (`text` 가 페이지 본문이다).
+
+**한계**: Gold 251건 중 220건이 3사 합의로 만들어졌으므로, 이것으로 학습한 분류기는 상당
+부분 3사를 모방하도록 배운다. 평가할 때 `source` 로 갈라 구간별 점수를 따로 내라.
 
 ## 이 저장소는 단독으로 실행된다
 
